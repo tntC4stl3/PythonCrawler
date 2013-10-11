@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 #coding:utf8
 #author:tntC4stl3
 
@@ -6,6 +5,7 @@ import argparse
 import sqlite3
 import logging
 import requests
+import threading
 from bs4 import BeautifulSoup
 from Queue import Queue
 
@@ -42,14 +42,17 @@ class Crawler(object):
 		# 连接数据库
 		self.connDB()
 
+		self.isRunning = True
+
 	def start(self):
 		while self.current_deepth <= self.max_deepth:
-			print "current deepeh: %d" % self.current_deepth
 			self._taskQueue()
 			while not self.q.empty():
 				url = self.q.get()
 				self._getLinks(url)
 			self.current_deepth += 1
+		# 爬取结束
+		self.isRunning = False
 		self.closeDB()
 
 	def _fetchPage(self, url, retry=3):
@@ -88,6 +91,11 @@ class Crawler(object):
 			else:
 				self.unvisitedUrl.add(link)
 
+	def rate(self):
+		'''获取任务进度'''
+		self.unvisitedNum = self.q.qsize()
+		self.vistedNum = len(self.visitedUrl) - self.unvisitedNum
+
 	def _taskQueue(self):
 		'''添加任务队列'''
 		while self.unvisitedUrl:
@@ -115,7 +123,6 @@ class Crawler(object):
 		try:
 			self.conn.execute("INSERT INTO pages(url, source) VALUES (?, ?)", (url, source))
 			self.conn.commit()
-			print "insert success."
 		except Exception, e:
 			print "Commit error: %s" % e
 
@@ -123,9 +130,30 @@ class Crawler(object):
 		try:
 			self.conn.close()
 		except Exception, e:
-			print "Close database error: %s" % e
+			print "Close database error: %s" % e		
 
+class ProgressRate(threading.Thread):
+	"""用于打印进度信息"""
+	def __init__(self, crawler):
+		threading.Thread.__init__(self)
+		self.name = "Progress Rate"
+		self.crawler = crawler
 
+	def run(self):
+		import time
+		print 'Starting Crawl at:', time.ctime()
+		while 1:
+			if not self.crawler.isRunning:
+				break
+			self.crawler.rate()
+			print '------------------------------'
+			print '* Current deepth: %d' % self.crawler.current_deepth
+			print '* Already crawled %d' % self.crawler.vistedNum
+			print '* Remained        %d' % self.crawler.unvisitedNum
+			print '------------------------------'
+			time.sleep(10)
+		print 'End at:', time.ctime()
+		
 def get_parser():
 	parser = argparse.ArgumentParser(description='A simple web crawler')
 	parser.add_argument('-u', metavar='URL', dest='url', type=str, 
@@ -134,7 +162,7 @@ def get_parser():
 						help='specify the max deep')
 	parser.add_argument('--threads', default=10, type=int, 
 						help='specify the number of threads (default: 10)')
-	parser.add_argument('--dbfile', default='data.db', type=str
+	parser.add_argument('--dbfile', default='data.db', type=str,
 						help='sqlite file to store data')
 	parser.add_argument('--key', metavar='KEYWORD', dest='keyword', type=str, 
 						help='keyword in page (optional)')
@@ -148,7 +176,7 @@ def get_parser():
 	return parser
 
 
-def command_line_runner():
+def main():
 	parser = get_parser()
 	# If you prefer to have dict-like view of the attributes, you can use the standard Python idiom, vars() -- from python document
 	args = vars(parser.parse_args())
@@ -158,7 +186,9 @@ def command_line_runner():
 	if not args['url'].startswith('http'):
 		args['url'] = 'http://' + args['url']
 	crawler = Crawler(args)
+	rate = ProgressRate(crawler)
+	rate.start()
 	crawler.start()
 		
 if __name__ == '__main__':
-	command_line_runner()
+	main()
