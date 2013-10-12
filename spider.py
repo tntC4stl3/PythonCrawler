@@ -7,19 +7,18 @@ import logging
 import requests
 import threading
 from bs4 import BeautifulSoup
+from threadPool import ThreadPool
 from Queue import Queue
 
 class Crawler(object):
 	"""Main part, carwl the site"""
 	def __init__(self, args):
-		# 初始链接
-		self.root = args['url']
 		# 抓取深度
 		self.max_deepth = args['deepth']
 		# 指定当前深度
 		self.current_deepth = 1
-		# 指定线程数
-		self.theadnum = args['threads']
+		# 线程管理
+		self.threadPool = ThreadPool(args['threads'])
 		# 指定存取数据库文件
 		self.dbfile = args['dbfile']
 		# 指定关键字
@@ -31,6 +30,7 @@ class Crawler(object):
 		self.unvisitedUrl.add(args['url'])
 		# 已访问的链接
 		self.visitedUrl = set()
+		self.q = Queue()
 		# http header
 		self.header = {
 			'Accetpt': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -38,44 +38,45 @@ class Crawler(object):
 			'Connection': 'keep-alive',
 			'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/29.0.1547.76 Safari/537.36'
 		}
-		self.q = Queue()
 		# 连接数据库
 		self.connDB()
 
 		self.isRunning = True
 
 	def start(self):
+		self.threadPool.startThreads()
+		# 判断当前深度
 		while self.current_deepth <= self.max_deepth:
-			self._taskQueue()
+			self.taskQueue()
 			while not self.q.empty():
 				url = self.q.get()
-				self._getLinks(url)
+				# 往线程池中添加任务
+				self.threadPool.addJob(self.getLinks, url)
+			self.threadPool.workJoin() # 等待所有线程完成
 			self.current_deepth += 1
 		# 爬取结束
 		self.isRunning = False
 		self.closeDB()
 
-	def _fetchPage(self, url, retry=3):
+	def fetchPage(self, url, retry=3):
 		'''获取页面内容'''
 		try:
-			r = requests.get(url, headers=self.header, timeout=10)
-			if r.status_code == requests.codes.ok:
-				source = r.text
+			self.r = requests.get(url, headers=self.header, timeout=3)
+			if self.r.status_code == requests.codes.ok:
+				source = self.r.text
 				self.writeDB(url, source)
 				return source
 			else:
 				pass
 				# log.warning('[WARNING][Open failed][status code:%d URL:%s]' % (r.status_code, self.url)
 		except Exception, e:
-			print e
 			if retry>0:
-				return self._fetchPage(url, retry-1)
+				return self.fetchPage(url, retry-1)
 
-	def _getLinks(self, url):
+	def getLinks(self, url):
 		'''从页面源代码获取所有链接'''
-		source = self._fetchPage(url=url)
+		source = self.fetchPage(url)
 		if not source:
-			self.visitedUrl.add(url)
 			return
 		try:
 			soup = BeautifulSoup(source)
@@ -86,6 +87,8 @@ class Crawler(object):
 		a_tags = soup.find_all('a', href=True)
 		for a_tag in a_tags:
 			link = a_tag.get('href')
+			# TODO：未处理相对路径的情况
+			# 如果链接存在于已访问集合或者待访问集合，跳过；否则加入待访问集合
 			if link in self.visitedUrl or link in self.unvisitedUrl:
 				pass
 			else:
@@ -93,10 +96,10 @@ class Crawler(object):
 
 	def rate(self):
 		'''获取任务进度'''
-		self.unvisitedNum = self.q.qsize()
+		self.unvisitedNum = self.threadPool.workQueue.qsize()
 		self.vistedNum = len(self.visitedUrl) - self.unvisitedNum
 
-	def _taskQueue(self):
+	def taskQueue(self):
 		'''添加任务队列'''
 		while self.unvisitedUrl:
 			url = self.unvisitedUrl.pop()
@@ -106,13 +109,12 @@ class Crawler(object):
 	def connDB(self):
 		'''连接数据库'''
 		try:
-			self.conn = sqlite3.connect(self.dbfile)
+			self.conn = sqlite3.connect(self.dbfile, isolation_level=None, check_same_thread = False) # sqlite3 默认不允许多线程commit
 			self.conn.execute("DROP TABLE IF EXISTS pages;")
 			self.conn.execute('''CREATE TABLE pages
 								(id INTEGER PRIMARY KEY AUTOINCREMENT,
 								 url TEXT,
 								 source TEXT);''')
-			self.conn.commit()
 			print 'Connect db success.'
 		except Exception, e:
 			logging.info('Conncet db Failed.')
@@ -122,7 +124,6 @@ class Crawler(object):
 		'''将抓取到的数据写入数据库'''
 		try:
 			self.conn.execute("INSERT INTO pages(url, source) VALUES (?, ?)", (url, source))
-			self.conn.commit()
 		except Exception, e:
 			print "Commit error: %s" % e
 
@@ -141,6 +142,8 @@ class ProgressRate(threading.Thread):
 
 	def run(self):
 		import time
+		from datetime import datetime
+		start = datetime.now()
 		print 'Starting Crawl at:', time.ctime()
 		while 1:
 			if not self.crawler.isRunning:
@@ -153,6 +156,8 @@ class ProgressRate(threading.Thread):
 			print '------------------------------'
 			time.sleep(10)
 		print 'End at:', time.ctime()
+		end = datetime.now()
+		print 'Spend time: %s' % (end - start)
 		
 def get_parser():
 	parser = argparse.ArgumentParser(description='A simple web crawler')
