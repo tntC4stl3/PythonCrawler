@@ -66,12 +66,11 @@ class Crawler(object):
 				source = self.r.text
 				self.writeDB(url, source)
 				return source
-			else:
-				pass
-				# log.warning('[WARNING][Open failed][status code:%d URL:%s]' % (r.status_code, self.url)
 		except Exception, e:
 			if retry>0:
 				return self.fetchPage(url, retry-1)
+			else:
+				logging.error('Open failed for 3 time: %s' % url)
 
 	def getLinks(self, url):
 		'''从页面源代码获取所有链接'''
@@ -81,8 +80,7 @@ class Crawler(object):
 		try:
 			soup = BeautifulSoup(source)
 		except Exception, e:
-			print e
-				#log.warning('[WARNING][Get href faild][URL:%s]' % self.url)
+			log.error('Get hrefs faild: %s' % url)
 			return
 		a_tags = soup.find_all('a', href=True)
 		for a_tag in a_tags:
@@ -115,9 +113,9 @@ class Crawler(object):
 								(id INTEGER PRIMARY KEY AUTOINCREMENT,
 								 url TEXT,
 								 source TEXT);''')
-			print 'Connect db success.'
+			logging.info('Connect db file succeed.')
 		except Exception, e:
-			logging.info('Conncet db Failed.')
+			logging.critical('Conncet db failed.')
 			self.conn = None
 
 	def writeDB(self, url, source):
@@ -125,13 +123,13 @@ class Crawler(object):
 		try:
 			self.conn.execute("INSERT INTO pages(url, source) VALUES (?, ?)", (url, source))
 		except Exception, e:
-			print "Commit error: %s" % e
+			logging.error('Commit error: %s' %e)
 
 	def closeDB(self):
 		try:
 			self.conn.close()
 		except Exception, e:
-			print "Close database error: %s" % e		
+			logging.error('Close database error: %s' %e)		
 
 class ProgressRate(threading.Thread):
 	"""用于打印进度信息"""
@@ -158,6 +156,19 @@ class ProgressRate(threading.Thread):
 		print 'End at:', time.ctime()
 		end = datetime.now()
 		print 'Spend time: %s' % (end - start)
+
+def logLevel(n):
+	levels = {
+		1 : logging.CRITICAL,
+		2 : logging.ERROR,
+		3 : logging.WARNING,
+		4 : logging.INFO,
+		5 : logging.DEBUG
+	}
+	try:
+		return levels[n]
+	except Exception, e:
+		return levels[2]
 		
 def get_parser():
 	parser = argparse.ArgumentParser(description='A simple web crawler')
@@ -173,13 +184,12 @@ def get_parser():
 						help='keyword in page (optional)')
 	parser.add_argument('--logfile', default='logging.log', dest='logfile', type=str, 
 						help='the path to store log file')
-	parser.add_argument('-l', metavar='LOG_LEVEL', dest='level', type=int, 
+	parser.add_argument('-l', metavar='LOG_LEVEL', default='2', dest='level', type=int, 
 						help='the detail level of logfile, the larger, the more detail (optional)')
 	parser.add_argument('--testself', action='store_true', 
 						help='test by self (optional)')
 	parser.add_argument('--version', action='version', version='%(prog)s 1.0')
 	return parser
-
 
 def main():
 	parser = get_parser()
@@ -190,6 +200,8 @@ def main():
 		return 
 	if not args['url'].startswith('http'):
 		args['url'] = 'http://' + args['url']
+	level = logLevel(args['level'])
+	logging.basicConfig(filename = args['logfile'], level = level, filemode = 'w', format = '%(asctime)s - %(levelname)s: %(message)s')  
 	crawler = Crawler(args)
 	rate = ProgressRate(crawler)
 	rate.start()
